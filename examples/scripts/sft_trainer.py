@@ -121,6 +121,7 @@ if script_args.use_peft:
 
     model = prepare_model_for_kbit_training(model)
     model = get_peft_model(model, peft_config)
+    """
     for name, module in model.named_modules():
         if isinstance(module, LoraLayer):
             module = module.to(torch_dtype)
@@ -129,6 +130,7 @@ if script_args.use_peft:
         if 'lm_head' in name or 'embed_tokens' in name:
             if hasattr(module, 'weight'):
                 module = module.to(torch_dtype)
+    """
 else:
     peft_config = None
 
