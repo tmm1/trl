@@ -15,13 +15,15 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
+import pdb
 import torch
 from datasets import load_dataset
-from peft import LoraConfig
+from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, BitsAndBytesConfig, HfArgumentParser, TrainingArguments
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, HfArgumentParser, TrainingArguments
 
 from trl import SFTTrainer
+from peft.tuners.lora import LoraLayer
 
 
 tqdm.pandas()
@@ -77,6 +79,9 @@ else:
     quantization_config = None
     torch_dtype = None
 
+from patch_flash_attn import replace_attn_with_flash_attn
+replace_attn_with_flash_attn()
+
 model = AutoModelForCausalLM.from_pretrained(
     script_args.model_name,
     quantization_config=quantization_config,
@@ -85,6 +90,11 @@ model = AutoModelForCausalLM.from_pretrained(
     torch_dtype=torch_dtype,
     use_auth_token=script_args.use_auth_token,
 )
+model.config.pretraining_tp = 1
+
+tokenizer = AutoTokenizer.from_pretrained(script_args.model_name)
+tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = "right"
 
 # Step 2: Load the dataset
 dataset = load_dataset(script_args.dataset_name, split="train")
@@ -108,6 +118,17 @@ if script_args.use_peft:
         bias="none",
         task_type="CAUSAL_LM",
     )
+
+    model = prepare_model_for_kbit_training(model)
+    model = get_peft_model(model, peft_config)
+    for name, module in model.named_modules():
+        if isinstance(module, LoraLayer):
+            module = module.to(torch_dtype)
+        if 'norm' in name:
+            module = module.to(torch_dtype)
+        if 'lm_head' in name or 'embed_tokens' in name:
+            if hasattr(module, 'weight'):
+                module = module.to(torch_dtype)
 else:
     peft_config = None
 
@@ -116,11 +137,13 @@ trainer = SFTTrainer(
     model=model,
     args=training_args,
     max_seq_length=script_args.seq_length,
+    tokenizer=tokenizer,
     train_dataset=dataset,
     dataset_text_field=script_args.dataset_text_field,
     peft_config=peft_config,
 )
 
+#breakpoint()
 trainer.train()
 
 # Step 6: Save the model
