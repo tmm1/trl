@@ -57,6 +57,7 @@ class ScriptArguments:
     peft_lora_alpha: Optional[int] = field(default=16, metadata={"help": "the alpha parameter of the LoRA adapters"})
     logging_steps: Optional[int] = field(default=1, metadata={"help": "the number of logging steps"})
     use_auth_token: Optional[bool] = field(default=True, metadata={"help": "Use HF auth token to access the model"})
+    use_flash_attn: Optional[bool] = field(default=False, metadata={"help": "Use FlashAttention"})
     num_train_epochs: Optional[int] = field(default=3, metadata={"help": "the number of training epochs"})
     max_steps: Optional[int] = field(default=-1, metadata={"help": "the number of training steps"})
 
@@ -79,8 +80,9 @@ else:
     quantization_config = None
     torch_dtype = None
 
-from patch_flash_attn import replace_attn_with_flash_attn
-replace_attn_with_flash_attn()
+if script_args.use_flash_attn:
+    from patch_flash_attn import replace_attn_with_flash_attn
+    replace_attn_with_flash_attn()
 
 model = AutoModelForCausalLM.from_pretrained(
     script_args.model_name,
@@ -121,16 +123,15 @@ if script_args.use_peft:
 
     model = prepare_model_for_kbit_training(model)
     model = get_peft_model(model, peft_config)
-    """
-    for name, module in model.named_modules():
-        if isinstance(module, LoraLayer):
-            module = module.to(torch_dtype)
-        if 'norm' in name:
-            module = module.to(torch_dtype)
-        if 'lm_head' in name or 'embed_tokens' in name:
-            if hasattr(module, 'weight'):
+    if script_args.use_flash_attn:
+        for name, module in model.named_modules():
+            if isinstance(module, LoraLayer):
                 module = module.to(torch_dtype)
-    """
+            if 'norm' in name:
+                module = module.to(torch_dtype)
+            if 'lm_head' in name or 'embed_tokens' in name:
+                if hasattr(module, 'weight'):
+                    module = module.to(torch_dtype)
 else:
     peft_config = None
 
